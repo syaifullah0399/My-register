@@ -1,0 +1,15 @@
+{
+  "name": "MyRegister Kasir",
+  "short_name": "MyRegister",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#059669",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/1170/1170576.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
