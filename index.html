@@ -1,0 +1,1278 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MyRegister - Sistem Kasir Pro</title>
+  
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#059669">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Font Awesome Icons CDN -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  
+  <!-- React 18 & ReactDOM UMD CDN -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <!-- Babel Standalone CDN -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    @media print {
+      body * {
+        visibility: hidden;
+      }
+      #printable-receipt, #printable-receipt * {
+        visibility: visible;
+      }
+      #printable-receipt {
+        position: absolute;
+        left: 0;
+        top: 0;
+        width: 100%;
+      }
+    }
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-emerald-950 font-sans antialiased selection:bg-emerald-200">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // --- SERVICE WORKER REGISTRATION ---
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .catch(err => console.log('SW registration failed:', err));
+      });
+    }
+
+    const formatRupiah = (number) => {
+      return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(number);
+    };
+
+    const isToday = (dateStr) => {
+      const date = new Date(dateStr);
+      const today = new Date();
+      return date.getDate() === today.getDate() && date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear();
+    };
+
+    const isWithinDays = (dateStr, days) => {
+      const date = new Date(dateStr);
+      const today = new Date();
+      const diffTime = Math.abs(today - date);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)); 
+      return diffDays <= days;
+    };
+
+    const initialMenus = [
+      { id: 1, name: 'Nasi Goreng Spesial', category: 'Makanan', price: 25000, icon: '🍛' },
+      { id: 2, name: 'Mie Goreng Seafood', category: 'Makanan', price: 28000, icon: '🍜' },
+      { id: 3, name: 'Ayam Bakar Madu', category: 'Makanan', price: 30000, icon: '🍗' },
+      { id: 4, name: 'Sate Ayam (10 Tusuk)', category: 'Makanan', price: 22000, icon: '🍢' },
+      { id: 5, name: 'Es Teh Manis', category: 'Minuman', price: 5000, icon: '🍹' },
+      { id: 6, name: 'Kopi Susu Gula Aren', category: 'Minuman', price: 18000, icon: '☕' },
+      { id: 7, name: 'Jus Jeruk Segar', category: 'Minuman', price: 15000, icon: '🍊' },
+      { id: 8, name: 'Kerupuk Udang', category: 'Cemilan', price: 3000, icon: '🍘' },
+      { id: 9, name: 'Kentang Goreng', category: 'Cemilan', price: 15000, icon: '🍟' },
+    ];
+
+    const generateMockTransactions = () => {
+      const txs = [];
+      const now = new Date();
+      for (let i = 0; i < 45; i++) {
+        const txDate = new Date(now);
+        txDate.setDate(now.getDate() - Math.floor(Math.random() * 20));
+        txDate.setHours(Math.floor(Math.random() * 12) + 9);
+        
+        const items = [
+          { menu: initialMenus[Math.floor(Math.random() * 4)], qty: Math.floor(Math.random() * 3) + 1 },
+          { menu: initialMenus[Math.floor(Math.random() * 4) + 4], qty: Math.floor(Math.random() * 2) + 1 }
+        ];
+        
+        const total = items.reduce((sum, item) => sum + (item.menu.price * item.qty), 0);
+        const paymentMethod = Math.random() > 0.5 ? 'Tunai' : 'QRIS';
+        const cashAmount = paymentMethod === 'Tunai' ? Math.ceil(total / 10000) * 10000 + 10000 : total;
+        
+        txs.push({
+          id: `TRX-${1000 + i}`,
+          refCode: `16413520230802${100000 + i}`,
+          date: txDate,
+          items: items,
+          total: total,
+          paymentMethod: paymentMethod,
+          cashAmount: cashAmount,
+          changeAmount: cashAmount - total,
+          cashierName: 'Elsa'
+        });
+      }
+      return txs.sort((a, b) => new Date(b.date) - new Date(a.date));
+    };
+
+    function ReceiptModal({ tx, onClose }) {
+      if (!tx) return null;
+
+      const handlePrint = () => {
+        window.print();
+      };
+
+      const totalQty = tx.items.reduce((acc, curr) => acc + curr.qty, 0);
+      const txDate = new Date(tx.date);
+
+      return (
+        <div className="fixed inset-0 bg-emerald-950/60 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-white rounded-3xl shadow-2xl w-full max-w-sm overflow-hidden flex flex-col max-h-[90vh]">
+            {/* Header Bar */}
+            <div className="p-4 bg-emerald-600 text-white flex justify-between items-center print:hidden">
+              <h3 className="font-bold text-sm flex items-center">
+                <i className="fa-solid fa-receipt mr-2"></i> Struk Pembayaran
+              </h3>
+              <button onClick={onClose} className="text-white/80 hover:text-white p-1 rounded-lg hover:bg-emerald-700">
+                <i className="fa-solid fa-xmark text-lg"></i>
+              </button>
+            </div>
+
+            {/* Struk Body Printable */}
+            <div id="printable-receipt" className="p-6 overflow-y-auto font-mono text-xs text-slate-800 bg-white leading-relaxed print:p-2">
+              <div className="text-center mb-4 space-y-1">
+                <div className="flex justify-center mb-2">
+                  <div className="p-2.5 bg-slate-900 text-white rounded-xl">
+                    <i className="fa-solid fa-store text-2xl"></i>
+                  </div>
+                </div>
+                <h2 className="text-base font-bold tracking-tight text-slate-900 font-sans">MyRegister</h2>
+                <p className="text-[11px] text-slate-600 font-sans">Jln bojong gede elsa donat projen</p>
+                <p className="text-[11px] text-slate-600 font-sans">No. Telp 0812345678</p>
+                <p className="text-[10px] text-slate-400 tracking-wider pt-1">{tx.refCode || '16413520230802084636'}</p>
+              </div>
+
+              <div className="border-b border-dashed border-slate-300 my-3"></div>
+
+              <div className="flex justify-between text-[11px]">
+                <div>
+                  <p>{txDate.toISOString().split('T')[0]}</p>
+                  <p>{txDate.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</p>
+                </div>
+                <div className="text-right">
+                  <p>Kasir: {tx.cashierName || 'Elsa'}</p>
+                  <p>No. {tx.id}</p>
+                </div>
+              </div>
+
+              <div className="border-b border-dashed border-slate-300 my-3"></div>
+
+              <div className="space-y-2">
+                {tx.items.map((item, index) => (
+                  <div key={index} className="space-y-0.5">
+                    <div className="font-semibold text-slate-900">
+                      {index + 1}. {item.menu.name}
+                    </div>
+                    <div className="flex justify-between text-slate-600 pl-3">
+                      <span>{item.qty} x {item.menu.price.toLocaleString('id-ID')}</span>
+                      <span className="font-semibold text-slate-800">Rp {(item.qty * item.menu.price).toLocaleString('id-ID')}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-b border-dashed border-slate-300 my-3"></div>
+
+              <div className="space-y-1 text-[11px]">
+                <div className="flex justify-between font-semibold">
+                  <span>Total QTY : {totalQty}</span>
+                </div>
+                <div className="flex justify-between pt-1">
+                  <span>Sub Total</span>
+                  <span>Rp {tx.total.toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between text-sm font-bold text-slate-900 pt-1">
+                  <span>Total</span>
+                  <span>Rp {tx.total.toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between pt-1">
+                  <span>Bayar ({tx.paymentMethod})</span>
+                  <span>Rp {(tx.cashAmount || tx.total).toLocaleString('id-ID')}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>Kembali</span>
+                  <span>Rp {(tx.changeAmount || 0).toLocaleString('id-ID')}</span>
+                </div>
+              </div>
+
+              <div className="border-b border-dashed border-slate-300 my-4"></div>
+
+              <div className="text-center space-y-2 pt-1 font-sans">
+                <p className="font-semibold text-slate-800">Terima Kasih Telah Berbelanja</p>
+                <div className="text-[10px] text-slate-400">
+                  <p>Link Kritik dan Saran:</p>
+                  <p className="truncate text-slate-500 font-mono">myregister.com/e-receipt/{tx.id}</p>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer Action Buttons */}
+            <div className="p-4 bg-slate-50 border-t border-slate-100 flex space-x-3 print:hidden">
+              <button
+                onClick={handlePrint}
+                className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl font-bold text-xs flex items-center justify-center space-x-2 transition-colors shadow-md shadow-emerald-100"
+              >
+                <i className="fa-solid fa-print"></i> <span>Cetak Struk</span>
+              </button>
+              <button
+                onClick={onClose}
+                className="px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 py-2.5 rounded-xl font-bold text-xs transition-colors"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function HomeScreen({ onNavigate, transactions, menus }) {
+      const currentDate = new Date().toLocaleDateString('id-ID', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      });
+
+      const todayStats = useMemo(() => {
+        let revenue = 0;
+        let count = 0;
+        let itemsCount = 0;
+
+        transactions.forEach(tx => {
+          if (isToday(tx.date)) {
+            revenue += tx.total;
+            count++;
+            tx.items.forEach(item => itemsCount += item.qty);
+          }
+        });
+
+        return { revenue, count, itemsCount };
+      }, [transactions]);
+
+      return (
+        <div className="p-6 md:p-8 space-y-8 animate-in fade-in duration-300">
+          <div className="relative overflow-hidden rounded-3xl bg-gradient-to-r from-emerald-800 via-emerald-700 to-teal-600 p-6 md:p-8 text-white shadow-xl">
+            <div className="absolute -right-10 -bottom-10 opacity-15 pointer-events-none">
+              <i className="fa-solid fa-store text-[220px]"></i>
+            </div>
+            
+            <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
+              <div className="space-y-3 max-w-xl">
+                <div className="inline-flex items-center space-x-2 bg-emerald-950/40 backdrop-blur-md px-3.5 py-1.5 rounded-full text-xs font-semibold text-emerald-200 border border-emerald-400/30">
+                  <i className="fa-solid fa-wand-magic-sparkles text-amber-300"></i>
+                  <span>Sistem Kasir Pro Operational</span>
+                </div>
+                
+                <h1 className="text-2xl sm:text-3xl font-black tracking-tight leading-tight">
+                  Selamat Datang di <span className="text-amber-300">MyRegister</span> 👋
+                </h1>
+                
+                <p className="text-xs sm:text-sm text-emerald-100 leading-relaxed opacity-95">
+                  Jln bojong gede elsa donat projen. Kelola transaksi penjualan, cek laporan harian, dan pantau stok menu toko dengan cepat & mudah.
+                </p>
+
+                <div className="flex flex-wrap items-center gap-4 pt-2 text-xs">
+                  <div className="flex items-center space-x-2 bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-sm">
+                    <i className="fa-solid fa-user text-emerald-300"></i>
+                    <span>Kasir Aktif: <strong>Elsa</strong></span>
+                  </div>
+                  <div className="flex items-center space-x-2 bg-white/10 px-3 py-1.5 rounded-lg backdrop-blur-sm">
+                    <i className="fa-regular fa-clock text-emerald-300"></i>
+                    <span>{currentDate}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-col sm:flex-row md:flex-col gap-3 shrink-0">
+                <button
+                  onClick={() => onNavigate('cashier')}
+                  className="bg-amber-400 hover:bg-amber-300 text-emerald-950 px-6 py-3.5 rounded-2xl font-black text-xs sm:text-sm flex items-center justify-center space-x-2 shadow-lg shadow-amber-400/20 transition-all hover:scale-105 active:scale-95"
+                >
+                  <i className="fa-solid fa-cart-shopping"></i>
+                  <span>Buka Kasir Sekarang</span>
+                  <i className="fa-solid fa-arrow-right"></i>
+                </button>
+                <button
+                  onClick={() => onNavigate('dashboard')}
+                  className="bg-white/15 hover:bg-white/25 text-white border border-white/20 px-6 py-3 rounded-2xl font-bold text-xs flex items-center justify-center space-x-2 backdrop-blur-sm transition-all"
+                >
+                  <i className="fa-solid fa-arrow-trend-up"></i>
+                  <span>Lihat Laporan Penjualan</span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h2 className="text-lg font-bold text-emerald-950 mb-4 flex items-center">
+              <i className="fa-solid fa-wand-magic-sparkles mr-2 text-emerald-600"></i> Aksi Cepat Kasir
+            </h2>
+            
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <button
+                onClick={() => onNavigate('cashier')}
+                className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all text-left group flex flex-col justify-between h-36"
+              >
+                <div className="p-3 bg-emerald-100 text-emerald-700 rounded-xl w-fit group-hover:scale-110 transition-transform">
+                  <i className="fa-solid fa-cart-shopping text-xl"></i>
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-emerald-950 group-hover:text-emerald-600 transition-colors">Kasir Transaksi</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Mulai catat pesanan baru</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => onNavigate('menu')}
+                className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all text-left group flex flex-col justify-between h-36"
+              >
+                <div className="p-3 bg-amber-100 text-amber-700 rounded-xl w-fit group-hover:scale-110 transition-transform">
+                  <i className="fa-solid fa-utensils text-xl"></i>
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-emerald-950 group-hover:text-emerald-600 transition-colors">Manajemen Menu</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Atur harga & stok produk</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => onNavigate('history')}
+                className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all text-left group flex flex-col justify-between h-36"
+              >
+                <div className="p-3 bg-teal-100 text-teal-700 rounded-xl w-fit group-hover:scale-110 transition-transform">
+                  <i className="fa-solid fa-clock-rotate-left text-xl"></i>
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-emerald-950 group-hover:text-emerald-600 transition-colors">Riwayat Struk</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Cetak ulang & cek detail</p>
+                </div>
+              </button>
+
+              <button
+                onClick={() => onNavigate('dashboard')}
+                className="bg-white p-5 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md hover:border-emerald-300 transition-all text-left group flex flex-col justify-between h-36"
+              >
+                <div className="p-3 bg-emerald-100 text-emerald-700 rounded-xl w-fit group-hover:scale-110 transition-transform">
+                  <i className="fa-solid fa-chart-line text-xl"></i>
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-emerald-950 group-hover:text-emerald-600 transition-colors">Ringkasan Dasbor</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">Analisis pendapatan toko</p>
+                </div>
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2 bg-white rounded-3xl p-6 border border-emerald-100 shadow-sm space-y-5">
+              <div className="flex justify-between items-center border-b border-emerald-50 pb-4">
+                <div>
+                  <h3 className="font-bold text-base text-emerald-950">Ringkasan Penjualan Hari Ini</h3>
+                  <p className="text-xs text-slate-500">Perkembangan real-time pesanan toko</p>
+                </div>
+                <span className="px-3 py-1 bg-emerald-100 text-emerald-800 rounded-full text-xs font-bold">
+                  Operational Active
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-4">
+                <div className="p-4 rounded-2xl bg-emerald-50/50 border border-emerald-100/60">
+                  <p className="text-xs text-emerald-700 font-semibold mb-1">Total Omset</p>
+                  <p className="text-lg sm:text-xl font-black text-emerald-950 truncate">{formatRupiah(todayStats.revenue)}</p>
+                </div>
+                <div className="p-4 rounded-2xl bg-teal-50/50 border border-teal-100/60">
+                  <p className="text-xs text-teal-700 font-semibold mb-1">Transaksi</p>
+                  <p className="text-lg sm:text-xl font-black text-emerald-950">{todayStats.count} <span className="text-xs font-medium text-slate-500">Struk</span></p>
+                </div>
+                <div className="p-4 rounded-2xl bg-emerald-50/50 border border-emerald-100/60">
+                  <p className="text-xs text-emerald-700 font-semibold mb-1">Terjual</p>
+                  <p className="text-lg sm:text-xl font-black text-emerald-950">{todayStats.itemsCount} <span className="text-xs font-medium text-slate-500">Pcs</span></p>
+                </div>
+              </div>
+
+              <div className="bg-amber-50 rounded-2xl p-4 border border-amber-200/60 flex items-start space-x-3">
+                <i className="fa-solid fa-bell text-amber-600 shrink-0 mt-0.5"></i>
+                <div className="text-xs space-y-0.5">
+                  <p className="font-bold text-amber-900">Catatan Kasir Shift (Elsa):</p>
+                  <p className="text-amber-800/90 leading-relaxed">
+                    Jangan lupa periksa kembali uang kembalian pecahan 5.000 & pastikan kertas cetak printer thermal struk masih cukup.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white rounded-3xl p-6 border border-emerald-100 shadow-sm flex flex-col justify-between">
+              <div>
+                <div className="flex justify-between items-center mb-4">
+                  <h3 className="font-bold text-base text-emerald-950 flex items-center">
+                    <i className="fa-solid fa-star mr-2 text-amber-500"></i> Menu Populer
+                  </h3>
+                  <button 
+                    onClick={() => onNavigate('menu')}
+                    className="text-xs text-emerald-600 font-bold hover:underline"
+                  >
+                    Lihat Semua
+                  </button>
+                </div>
+
+                <div className="space-y-3">
+                  {menus.slice(0, 4).map((item, idx) => (
+                    <div key={item.id} className="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100">
+                      <div className="flex items-center space-x-3">
+                        <span className="text-2xl">{item.icon}</span>
+                        <div>
+                          <h4 className="font-bold text-xs text-emerald-950 line-clamp-1">{item.name}</h4>
+                          <p className="text-[10px] text-slate-500">{item.category}</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-black text-xs text-emerald-700">{formatRupiah(item.price)}</p>
+                        <span className="text-[10px] font-semibold text-amber-600">Top #{idx + 1}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={() => onNavigate('cashier')}
+                className="w-full mt-4 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 py-2.5 rounded-xl font-bold text-xs transition-colors border border-emerald-200 text-center"
+              >
+                Pesan Menu Ini di Kasir
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Dashboard({ transactions, onShowReceipt }) {
+      const stats = useMemo(() => {
+        let todayTx = 0;
+        let todayItems = 0;
+        let weeklyRevenue = 0;
+        const todayTransactions = [];
+
+        transactions.forEach(tx => {
+          if (isToday(tx.date)) {
+            todayTx++;
+            tx.items.forEach(item => todayItems += item.qty);
+            todayTransactions.push(tx);
+          }
+          if (isWithinDays(tx.date, 7)) {
+            weeklyRevenue += tx.total;
+          }
+        });
+
+        return { todayTx, todayItems, weeklyRevenue, todayTransactions };
+      }, [transactions]);
+
+      return (
+        <div className="p-6 md:p-8 animate-in fade-in duration-300">
+          <h2 className="text-2xl font-bold mb-6 text-emerald-950">Ringkasan Dasbor</h2>
+          
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-8">
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100/80 flex items-center space-x-4">
+              <div className="p-3 bg-emerald-100/70 text-emerald-700 rounded-xl shrink-0">
+                <i className="fa-solid fa-receipt text-xl"></i>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-emerald-700">Transaksi Hari Ini</p>
+                <p className="text-2xl font-black text-emerald-950 mt-1">{stats.todayTx}</p>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100/80 flex items-center space-x-4">
+              <div className="p-3 bg-teal-100/70 text-teal-700 rounded-xl shrink-0">
+                <i className="fa-solid fa-cart-shopping text-xl"></i>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-teal-700">Item Terjual Hari Ini</p>
+                <p className="text-2xl font-black text-emerald-950 mt-1">{stats.todayItems} <span className="text-xs font-normal text-slate-500">pcs</span></p>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-emerald-100/80 flex items-center space-x-4">
+              <div className="p-3 bg-emerald-100/70 text-emerald-700 rounded-xl shrink-0">
+                <i className="fa-solid fa-money-bill-wave text-xl"></i>
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-xs font-semibold text-emerald-700">Pendapatan Minggu Ini</p>
+                <p className="text-xl sm:text-2xl font-black text-emerald-950 mt-1 whitespace-nowrap">{formatRupiah(stats.weeklyRevenue)}</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-emerald-100/80 overflow-hidden">
+            <div className="p-5 border-b border-emerald-50 flex justify-between items-center bg-emerald-50/30">
+              <h3 className="text-base font-bold text-emerald-950">Transaksi Hari Ini ({stats.todayTransactions.length})</h3>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-emerald-50/50 text-emerald-800 text-xs font-bold uppercase tracking-wider">
+                  <tr>
+                    <th className="px-6 py-3.5">ID Transaksi</th>
+                    <th className="px-6 py-3.5">Waktu</th>
+                    <th className="px-6 py-3.5">Item</th>
+                    <th className="px-6 py-3.5">Metode</th>
+                    <th className="px-6 py-3.5 text-right">Total</th>
+                    <th className="px-6 py-3.5 text-center">Aksi</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-emerald-50 text-sm">
+                  {stats.todayTransactions.length > 0 ? (
+                    stats.todayTransactions.map(tx => (
+                      <tr key={tx.id} className="hover:bg-emerald-50/20 transition-colors">
+                        <td className="px-6 py-4 font-bold text-emerald-700">{tx.id}</td>
+                        <td className="px-6 py-4 text-slate-600">
+                          {new Date(tx.date).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}
+                        </td>
+                        <td className="px-6 py-4 text-slate-700">
+                          {tx.items.length} Jenis ({tx.items.reduce((acc, curr) => acc + curr.qty, 0)} pcs)
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${tx.paymentMethod === 'Tunai' ? 'bg-amber-100 text-amber-800' : 'bg-teal-100 text-teal-800'}`}>
+                            {tx.paymentMethod}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right font-black text-emerald-950">{formatRupiah(tx.total)}</td>
+                        <td className="px-6 py-4 text-center">
+                          <button
+                            onClick={() => onShowReceipt(tx)}
+                            className="p-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg text-xs font-bold transition-colors border border-emerald-200 inline-flex items-center space-x-1"
+                            title="Lihat Struk"
+                          >
+                            <i className="fa-solid fa-eye mr-1"></i>
+                            <span>Struk</span>
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan="6" className="px-6 py-8 text-center text-slate-400">Belum ada transaksi hari ini.</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    function Cashier({ menus, addTransaction, onShowReceipt }) {
+      const [cart, setCart] = useState([]);
+      const [search, setSearch] = useState('');
+      const [category, setCategory] = useState('Semua');
+      const [showPayment, setShowPayment] = useState(false);
+      const [paymentMethod, setPaymentMethod] = useState('Tunai');
+      const [cashAmount, setCashAmount] = useState('');
+      const [paymentError, setPaymentError] = useState('');
+
+      const categories = ['Semua', ...new Set(menus.map(m => m.category))];
+
+      const filteredMenus = menus.filter(m => {
+        const matchSearch = m.name.toLowerCase().includes(search.toLowerCase());
+        const matchCategory = category === 'Semua' || m.category === category;
+        return matchSearch && matchCategory;
+      });
+
+      const addToCart = (menu) => {
+        const existing = cart.find(item => item.menu.id === menu.id);
+        if (existing) {
+          setCart(cart.map(item => item.menu.id === menu.id ? { ...item, qty: item.qty + 1 } : item));
+        } else {
+          setCart([...cart, { menu, qty: 1 }]);
+        }
+      };
+
+      const updateQty = (id, delta) => {
+        setCart(cart.map(item => {
+          if (item.menu.id === id) {
+            return { ...item, qty: Math.max(0, item.qty + delta) };
+          }
+          return item;
+        }).filter(item => item.qty > 0));
+      };
+
+      const totalCart = cart.reduce((sum, item) => sum + (item.menu.price * item.qty), 0);
+
+      const handleCheckout = () => {
+        if (cart.length === 0) return;
+        const cash = parseInt(cashAmount) || 0;
+        
+        if (paymentMethod === 'Tunai' && cash < totalCart) {
+          setPaymentError("Uang tunai kurang dari total tagihan!");
+          return;
+        }
+
+        const newTx = {
+          id: `TRX-${Date.now().toString().slice(-6)}`,
+          refCode: `16413520230802${Math.floor(100000 + Math.random() * 900000)}`,
+          date: new Date(),
+          items: cart,
+          total: totalCart,
+          paymentMethod: paymentMethod,
+          cashAmount: paymentMethod === 'Tunai' ? cash : totalCart,
+          changeAmount: paymentMethod === 'Tunai' ? cash - totalCart : 0,
+          cashierName: 'Elsa'
+        };
+
+        addTransaction(newTx);
+        setCart([]);
+        setShowPayment(false);
+        setCashAmount('');
+        setPaymentError('');
+        
+        onShowReceipt(newTx);
+      };
+
+      return (
+        <div className="flex h-full">
+          {/* Menu Grid */}
+          <div className="flex-1 flex flex-col bg-slate-50/50 p-6 animate-in fade-in slide-in-from-left-4 duration-300">
+            <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6 gap-4">
+              <div className="relative flex-1 w-full max-w-md">
+                <i className="fa-solid fa-magnifying-glass absolute left-3.5 top-1/2 transform -translate-y-1/2 text-emerald-400"></i>
+                <input 
+                  type="text" 
+                  placeholder="Cari makanan atau minuman..." 
+                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-emerald-100 bg-white text-sm focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-shadow text-emerald-950"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                />
+              </div>
+              <div className="flex space-x-2 overflow-x-auto pb-1 max-w-full">
+                {categories.map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => setCategory(cat)}
+                    className={`px-4 py-2 rounded-full text-xs font-bold whitespace-nowrap transition-colors ${
+                      category === cat ? 'bg-emerald-700 text-white shadow-md' : 'bg-white text-emerald-800 border border-emerald-100 hover:bg-emerald-50'
+                    }`}
+                  >
+                    {cat}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 overflow-y-auto pb-20 pr-1">
+              {filteredMenus.map(menu => (
+                <button 
+                  key={menu.id}
+                  onClick={() => addToCart(menu)}
+                  className="bg-white p-4 rounded-2xl border border-emerald-100 shadow-sm hover:shadow-md transition-all flex flex-col items-center justify-center text-center group hover:border-emerald-300 active:scale-95"
+                >
+                  <div className="text-4xl mb-2 group-hover:scale-110 transition-transform">{menu.icon}</div>
+                  <h4 className="font-bold text-emerald-950 text-xs mb-1 line-clamp-1">{menu.name}</h4>
+                  <p className="text-emerald-600 font-extrabold text-xs">{formatRupiah(menu.price)}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cart Panel */}
+          <div className="w-80 bg-white border-l border-emerald-100 flex flex-col shadow-xl z-10 animate-in slide-in-from-right-8 duration-300">
+            <div className="p-4 border-b border-emerald-50 bg-emerald-50/20">
+              <h2 className="text-base font-bold flex items-center text-emerald-950 whitespace-nowrap">
+                <i className="fa-solid fa-cart-shopping mr-2 text-emerald-600"></i> Pesanan Saat Ini
+              </h2>
+            </div>
+            
+            <div className="flex-1 overflow-y-auto p-3 space-y-3">
+              {cart.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-emerald-300 space-y-3 text-sm">
+                  <i className="fa-solid fa-utensils text-4xl opacity-30"></i>
+                  <p>Belum ada pesanan.</p>
+                </div>
+              ) : (
+                cart.map(item => (
+                  <div key={item.menu.id} className="flex justify-between items-center p-2.5 bg-emerald-50/30 rounded-xl border border-emerald-100/60">
+                    <div className="flex-1 min-w-0 mr-2">
+                      <h4 className="font-semibold text-xs truncate text-emerald-950" title={item.menu.name}>{item.menu.name}</h4>
+                      <p className="text-emerald-600 text-xs font-bold mt-0.5">{formatRupiah(item.menu.price)}</p>
+                    </div>
+                    <div className="flex items-center space-x-1.5 bg-white px-2 py-1 rounded-lg border border-emerald-200 shadow-sm shrink-0">
+                      <button onClick={() => updateQty(item.menu.id, -1)} className="p-0.5 text-rose-500 hover:bg-rose-50 rounded">
+                        {item.qty === 1 ? <i className="fa-solid fa-trash-can text-xs"></i> : <i className="fa-solid fa-minus text-xs"></i>}
+                      </button>
+                      <span className="font-bold w-5 text-center text-xs text-emerald-950">{item.qty}</span>
+                      <button onClick={() => updateQty(item.menu.id, 1)} className="p-0.5 text-emerald-600 hover:bg-emerald-50 rounded">
+                        <i className="fa-solid fa-plus text-xs"></i>
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="p-4 bg-emerald-50/30 border-t border-emerald-100 space-y-3">
+              <div className="flex justify-between items-center text-sm font-bold">
+                <span className="text-emerald-900">Total:</span>
+                <span className="text-emerald-600 text-lg whitespace-nowrap">{formatRupiah(totalCart)}</span>
+              </div>
+              <button 
+                disabled={cart.length === 0}
+                onClick={() => setShowPayment(true)}
+                className="w-full bg-emerald-600 text-white py-3 rounded-xl font-bold text-sm hover:bg-emerald-700 transition-colors disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed shadow-md shadow-emerald-200"
+              >
+                Bayar Sekarang
+              </button>
+            </div>
+          </div>
+
+          {/* Payment Modal */}
+          {showPayment && (
+            <div className="fixed inset-0 bg-emerald-950/40 backdrop-blur-sm flex items-center justify-center z-50 animate-in fade-in duration-200 p-4">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+                <div className="p-6 bg-emerald-600 text-white flex justify-between items-center">
+                  <h2 className="text-lg font-bold">Proses Pembayaran</h2>
+                  <button onClick={() => { setShowPayment(false); setPaymentError(''); }} className="text-white/80 hover:text-white p-1 rounded-lg">
+                    <i className="fa-solid fa-xmark text-lg"></i>
+                  </button>
+                </div>
+                
+                <div className="p-6 space-y-5">
+                  <div className="text-center p-4 bg-emerald-50/50 rounded-2xl border border-emerald-100">
+                    <p className="text-xs text-emerald-700 font-medium mb-1">Total Tagihan</p>
+                    <p className="text-3xl font-black text-emerald-950">{formatRupiah(totalCart)}</p>
+                  </div>
+
+                  <div>
+                    <p className="font-bold text-xs text-emerald-900 mb-2 uppercase tracking-wider">Metode Pembayaran</p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <button 
+                        onClick={() => { setPaymentMethod('Tunai'); setPaymentError(''); }}
+                        className={`flex items-center justify-center space-x-2 py-3 rounded-xl border-2 font-bold text-sm transition-all ${paymentMethod === 'Tunai' ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                      >
+                        <i className="fa-solid fa-money-bill-wave"></i> <span>Tunai</span>
+                      </button>
+                      <button 
+                        onClick={() => { setPaymentMethod('QRIS'); setPaymentError(''); }}
+                        className={`flex items-center justify-center space-x-2 py-3 rounded-xl border-2 font-bold text-sm transition-all ${paymentMethod === 'QRIS' ? 'border-emerald-600 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                      >
+                        <i className="fa-solid fa-qrcode"></i> <span>QRIS</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {paymentMethod === 'Tunai' && (
+                    <div>
+                      <p className="font-bold text-xs text-emerald-900 mb-2 uppercase tracking-wider">Uang Diterima</p>
+                      <input 
+                        type="number" 
+                        value={cashAmount}
+                        onChange={(e) => { setCashAmount(e.target.value); setPaymentError(''); }}
+                        className="w-full px-4 py-3 text-base rounded-xl border border-emerald-200 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none text-emerald-950"
+                        placeholder="Masukkan nominal uang..."
+                      />
+                      {paymentError && (
+                        <p className="mt-2 text-rose-600 text-xs font-bold">{paymentError}</p>
+                      )}
+                      {(parseInt(cashAmount) || 0) >= totalCart && (
+                        <p className="mt-2 text-teal-700 font-bold text-xs flex justify-between bg-teal-50 p-2.5 rounded-lg border border-teal-100">
+                          <span>Kembalian:</span> 
+                          <span>{formatRupiah((parseInt(cashAmount) || 0) - totalCart)}</span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  <button 
+                    onClick={handleCheckout}
+                    className="w-full bg-emerald-600 text-white py-3.5 rounded-xl font-bold text-sm hover:bg-emerald-700 transition-colors shadow-lg shadow-emerald-200 flex items-center justify-center space-x-2"
+                  >
+                    <i className="fa-solid fa-check"></i> <span>Konfirmasi & Cetak Struk</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function TransactionHistory({ transactions, onShowReceipt }) {
+      const [filter, setFilter] = useState('today');
+      const [expandedTx, setExpandedTx] = useState(null);
+
+      const filteredTx = useMemo(() => {
+        return transactions.filter(tx => {
+          if (filter === 'today') return isToday(tx.date);
+          if (filter === 'week') return isWithinDays(tx.date, 7);
+          if (filter === 'month') return isWithinDays(tx.date, 30);
+          return true;
+        });
+      }, [transactions, filter]);
+
+      const totalRevenue = filteredTx.reduce((sum, tx) => sum + tx.total, 0);
+
+      return (
+        <div className="p-6 md:p-8 animate-in fade-in duration-300">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <div>
+              <h2 className="text-2xl font-bold text-emerald-950">Riwayat Transaksi</h2>
+              <p className="text-emerald-700/80 mt-1 text-sm">
+                Ditemukan <span className="font-bold text-emerald-600">{filteredTx.length}</span> transaksi.
+                Total: <span className="font-bold text-teal-600">{formatRupiah(totalRevenue)}</span>
+              </p>
+            </div>
+            
+            <div className="flex bg-emerald-100/50 p-1.5 rounded-xl border border-emerald-100 text-xs font-bold">
+              <button 
+                onClick={() => setFilter('today')} 
+                className={`px-4 py-2 rounded-lg transition-all ${filter === 'today' ? 'bg-white shadow-sm text-emerald-700' : 'text-emerald-800 hover:text-emerald-950'}`}
+              >
+                Hari Ini
+              </button>
+              <button 
+                onClick={() => setFilter('week')} 
+                className={`px-4 py-2 rounded-lg transition-all ${filter === 'week' ? 'bg-white shadow-sm text-emerald-700' : 'text-emerald-800 hover:text-emerald-950'}`}
+              >
+                Minggu Ini
+              </button>
+              <button 
+                onClick={() => setFilter('month')} 
+                className={`px-4 py-2 rounded-lg transition-all ${filter === 'month' ? 'bg-white shadow-sm text-emerald-700' : 'text-emerald-800 hover:text-emerald-950'}`}
+              >
+                Bulan Ini
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 divide-y divide-emerald-50">
+            {filteredTx.length > 0 ? (
+              filteredTx.map(tx => (
+                <div key={tx.id} className="flex flex-col">
+                  <div className="p-5 flex flex-col md:flex-row md:items-center justify-between hover:bg-emerald-50/20 transition-colors">
+                    <div 
+                      className="flex items-center space-x-4 mb-3 md:mb-0 cursor-pointer flex-1"
+                      onClick={() => setExpandedTx(expandedTx === tx.id ? null : tx.id)}
+                    >
+                      <div className="bg-emerald-100/70 p-3 rounded-full text-emerald-700 shrink-0">
+                        <i className="fa-solid fa-receipt text-lg"></i>
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-base text-emerald-950">{tx.id}</h3>
+                        <p className="text-xs text-emerald-700/70 mt-0.5">
+                          {new Date(tx.date).toLocaleDateString('id-ID', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between md:justify-end space-x-4">
+                      <span className={`px-2.5 py-1 rounded-full text-xs font-semibold ${tx.paymentMethod === 'Tunai' ? 'bg-amber-100 text-amber-800' : 'bg-teal-100 text-teal-800'}`}>
+                        {tx.paymentMethod}
+                      </span>
+                      <p className="font-black text-lg text-emerald-950">{formatRupiah(tx.total)}</p>
+                      
+                      <button
+                        onClick={() => onShowReceipt(tx)}
+                        className="ml-2 flex items-center space-x-1.5 px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-xl text-xs font-bold transition-colors border border-emerald-200/60"
+                        title="Lihat Struk Belanja"
+                      >
+                        <i className="fa-solid fa-eye"></i>
+                        <span className="hidden sm:inline">Struk</span>
+                      </button>
+                    </div>
+                  </div>
+                  
+                  {expandedTx === tx.id && (
+                    <div className="bg-emerald-50/20 p-5 border-t border-emerald-50 animate-in slide-in-from-top-2">
+                      <h4 className="font-bold text-xs text-emerald-700/80 mb-3 uppercase tracking-wider">Detail Item yang Dibeli</h4>
+                      <ul className="space-y-2">
+                        {tx.items.map((item, idx) => (
+                          <li key={idx} className="flex justify-between items-center bg-white p-3.5 rounded-xl border border-emerald-100 text-xs">
+                            <div className="flex items-center space-x-3">
+                              <span className="text-xl">{item.menu.icon}</span>
+                              <div>
+                                <p className="font-bold text-emerald-950">{item.menu.name}</p>
+                                <p className="text-emerald-600 font-medium">{formatRupiah(item.menu.price)} x {item.qty}</p>
+                              </div>
+                            </div>
+                            <p className="font-bold text-emerald-950">{formatRupiah(item.menu.price * item.qty)}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              ))
+            ) : (
+              <div className="p-12 text-center text-emerald-300">
+                <i className="fa-solid fa-clock-rotate-left text-4xl mb-4 opacity-30"></i>
+                <p className="text-base text-slate-500 font-medium">Tidak ada riwayat transaksi pada periode ini.</p>
+              </div>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    function MenuManagement({ menus, setMenus }) {
+      const [search, setSearch] = useState('');
+      const [category, setCategory] = useState('Semua');
+      const [editingItem, setEditingItem] = useState(null);
+      const [editPrice, setEditPrice] = useState('');
+
+      const [showAddModal, setShowAddModal] = useState(false);
+      const [newMenu, setNewMenu] = useState({ name: '', category: 'Makanan', price: '', icon: '🍛' });
+      const [deletingId, setDeletingId] = useState(null);
+
+      const categories = ['Semua', ...new Set(menus.map(m => m.category))];
+
+      const filteredMenus = menus.filter(m => {
+        const matchSearch = m.name.toLowerCase().includes(search.toLowerCase());
+        const matchCategory = category === 'Semua' || m.category === category;
+        return matchSearch && matchCategory;
+      });
+
+      const handleDeleteConfirm = () => {
+        if (deletingId) {
+          setMenus(menus.filter(m => m.id !== deletingId));
+          setDeletingId(null);
+        }
+      };
+
+      const handleEditClick = (menu) => {
+        setEditingItem(menu.id);
+        setEditPrice(menu.price);
+      };
+
+      const handleSavePrice = (id) => {
+        const p = parseInt(editPrice) || 0;
+        if (p > 0) {
+          setMenus(menus.map(m => m.id === id ? { ...m, price: p } : m));
+        }
+        setEditingItem(null);
+      };
+
+      const handleAddMenu = (e) => {
+        e.preventDefault();
+        if (!newMenu.name || !newMenu.price) return;
+
+        const itemToAdd = {
+          id: Date.now(),
+          name: newMenu.name,
+          category: newMenu.category,
+          price: parseInt(newMenu.price) || 0,
+          icon: newMenu.icon || '🍽️'
+        };
+
+        setMenus([...menus, itemToAdd]);
+        setShowAddModal(false);
+        setNewMenu({ name: '', category: 'Makanan', price: '', icon: '🍛' });
+      };
+
+      return (
+        <div className="p-6 md:p-8 animate-in fade-in duration-300">
+          <div className="flex justify-between items-center mb-8">
+            <div>
+              <h2 className="text-2xl font-bold text-emerald-950">Manajemen Menu</h2>
+              <p className="text-xs text-slate-500 mt-1">Kelola daftar menu makanan dan minuman toko Anda</p>
+            </div>
+            <button 
+              onClick={() => setShowAddModal(true)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-xl font-bold text-xs flex items-center shadow-md shadow-emerald-100 transition-colors"
+            >
+              <i className="fa-solid fa-plus mr-1.5"></i> Tambah Menu
+            </button>
+          </div>
+
+          <div className="flex flex-col md:flex-row space-y-4 md:space-y-0 md:space-x-4 mb-8">
+            <div className="relative flex-1">
+              <i className="fa-solid fa-magnifying-glass absolute left-4 top-1/2 transform -translate-y-1/2 text-emerald-400"></i>
+              <input 
+                type="text" 
+                placeholder="Cari menu berdasarkan nama..." 
+                className="w-full pl-11 pr-4 py-2.5 rounded-xl border border-emerald-100 focus:ring-2 focus:ring-emerald-500 outline-none text-emerald-950 bg-white text-sm"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+              />
+            </div>
+            <div className="flex space-x-2 overflow-x-auto pb-1">
+              {categories.map(cat => (
+                <button
+                  key={cat}
+                  onClick={() => setCategory(cat)}
+                  className={`px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap transition-colors ${
+                    category === cat ? 'bg-emerald-800 text-white shadow-md' : 'bg-white text-emerald-800 border border-emerald-100 hover:bg-emerald-50'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            {filteredMenus.map(menu => (
+              <div key={menu.id} className="bg-white rounded-2xl p-5 border border-emerald-100 shadow-sm hover:shadow-md transition-shadow group relative overflow-hidden">
+                <div className="absolute top-3 right-3 flex space-x-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                  <button 
+                    onClick={() => handleEditClick(menu)}
+                    className="p-1.5 bg-amber-100 text-amber-800 hover:bg-amber-200 rounded-lg transition-colors"
+                    title="Ubah Harga"
+                  >
+                    <i className="fa-solid fa-pen-to-square"></i>
+                  </button>
+                  <button 
+                    onClick={() => setDeletingId(menu.id)}
+                    className="p-1.5 bg-rose-100 text-rose-700 hover:bg-rose-200 rounded-lg transition-colors"
+                    title="Hapus Menu"
+                  >
+                    <i className="fa-solid fa-trash-can"></i>
+                  </button>
+                </div>
+
+                <div className="flex flex-col items-center text-center mt-2">
+                  <div className="text-5xl mb-3 bg-emerald-50/50 w-20 h-20 rounded-full flex items-center justify-center border border-emerald-100">
+                    {menu.icon}
+                  </div>
+                  <span className="px-3 py-1 bg-emerald-50 text-emerald-700 rounded-full text-[10px] font-bold mb-1.5">
+                    {menu.category}
+                  </span>
+                  <h3 className="font-bold text-base text-emerald-950 mb-1">{menu.name}</h3>
+                  
+                  {editingItem === menu.id ? (
+                    <div className="flex items-center space-x-2 mt-2">
+                      <input 
+                        type="number" 
+                        value={editPrice}
+                        onChange={(e) => setEditPrice(e.target.value)}
+                        className="w-24 px-2 py-1 text-sm border border-emerald-500 rounded-lg outline-none text-center text-emerald-950"
+                      />
+                      <button onClick={() => handleSavePrice(menu.id)} className="p-1.5 bg-emerald-600 text-white rounded-lg"><i className="fa-solid fa-check"></i></button>
+                      <button onClick={() => setEditingItem(null)} className="p-1.5 bg-slate-200 text-slate-700 rounded-lg"><i className="fa-solid fa-xmark"></i></button>
+                    </div>
+                  ) : (
+                    <p className="text-emerald-600 font-black text-lg mt-1">{formatRupiah(menu.price)}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Add Menu Modal */}
+          {showAddModal && (
+            <div className="fixed inset-0 bg-emerald-950/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in">
+              <div className="bg-white rounded-3xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95">
+                <div className="p-5 bg-emerald-600 text-white flex justify-between items-center">
+                  <h3 className="font-bold text-base">Tambah Menu Baru</h3>
+                  <button onClick={() => setShowAddModal(false)} className="text-white/80 hover:text-white p-1"><i className="fa-solid fa-xmark text-lg"></i></button>
+                </div>
+                <form onSubmit={handleAddMenu} className="p-6 space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-900 mb-1">Nama Menu</label>
+                    <input 
+                      type="text" 
+                      required
+                      value={newMenu.name}
+                      onChange={(e) => setNewMenu({ ...newMenu, name: e.target.value })}
+                      placeholder="Contoh: Es Kelapa Muda" 
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-emerald-200 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-900 mb-1">Kategori</label>
+                    <select 
+                      value={newMenu.category}
+                      onChange={(e) => setNewMenu({ ...newMenu, category: e.target.value })}
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-emerald-200 text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-white"
+                    >
+                      <option value="Makanan">Makanan</option>
+                      <option value="Minuman">Minuman</option>
+                      <option value="Cemilan">Cemilan</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-900 mb-1">Harga (Rp)</label>
+                    <input 
+                      type="number" 
+                      required
+                      value={newMenu.price}
+                      onChange={(e) => setNewMenu({ ...newMenu, price: e.target.value })}
+                      placeholder="15000" 
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-emerald-200 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-bold text-emerald-900 mb-1">Ikon Emoji</label>
+                    <input 
+                      type="text" 
+                      value={newMenu.icon}
+                      onChange={(e) => setNewMenu({ ...newMenu, icon: e.target.value })}
+                      placeholder="🍹" 
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-emerald-200 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                    />
+                  </div>
+                  <div className="pt-2 flex space-x-3">
+                    <button 
+                      type="submit" 
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold text-xs transition-colors"
+                    >
+                      Simpan Menu
+                    </button>
+                    <button 
+                      type="button" 
+                      onClick={() => setShowAddModal(false)}
+                      className="px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 py-3 rounded-xl font-bold text-xs transition-colors"
+                    >
+                      Batal
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {/* Delete Confirmation Modal */}
+          {deletingId && (
+            <div className="fixed inset-0 bg-emerald-950/40 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+              <div className="bg-white rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-4">
+                <h3 className="font-bold text-lg text-emerald-950">Hapus Menu?</h3>
+                <p className="text-xs text-slate-600">Apakah Anda yakin ingin menghapus menu ini dari daftar MyRegister?</p>
+                <div className="flex space-x-3 pt-2">
+                  <button 
+                    onClick={handleDeleteConfirm}
+                    className="flex-1 bg-rose-600 hover:bg-rose-700 text-white py-2.5 rounded-xl font-bold text-xs"
+                  >
+                    Hapus
+                  </button>
+                  <button 
+                    onClick={() => setDeletingId(null)}
+                    className="flex-1 bg-slate-200 hover:bg-slate-300 text-slate-700 py-2.5 rounded-xl font-bold text-xs"
+                  >
+                    Batal
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('home');
+      const [menus, setMenus] = useState(initialMenus);
+      const [transactions, setTransactions] = useState(generateMockTransactions());
+      const [selectedReceiptTx, setSelectedReceiptTx] = useState(null);
+
+      const NavItem = ({ id, label, iconClass }) => (
+        <button
+          onClick={() => setActiveTab(id)}
+          className={`w-full flex items-center space-x-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+            activeTab === id 
+              ? 'bg-emerald-700 text-white shadow-md shadow-emerald-200' 
+              : 'text-emerald-900/80 hover:bg-emerald-50 hover:text-emerald-950'
+          }`}
+        >
+          <i className={`${iconClass} text-base`}></i>
+          <span className="font-bold text-sm">{label}</span>
+        </button>
+      );
+
+      return (
+        <div className="flex h-screen bg-slate-50/50 font-sans text-emerald-950 overflow-hidden">
+          {/* Sidebar */}
+          <aside className="w-64 bg-white border-r border-emerald-100 flex flex-col shadow-sm z-10 shrink-0">
+            <div className="p-6 border-b border-emerald-50 flex items-center space-x-3">
+              <div className="p-2.5 bg-emerald-700 text-white rounded-xl shadow-sm">
+                <i className="fa-solid fa-store text-lg"></i>
+              </div>
+              <div>
+                <h1 className="text-lg font-black tracking-tight text-emerald-950">MyRegister</h1>
+                <p className="text-[10px] font-semibold text-emerald-600">Sistem Kasir Pro</p>
+              </div>
+            </div>
+            <nav className="flex-1 p-4 space-y-1.5">
+              <NavItem id="home" label="Beranda" iconClass="fa-solid fa-house" />
+              <NavItem id="dashboard" label="Dasbor" iconClass="fa-solid fa-chart-line" />
+              <NavItem id="cashier" label="Kasir" iconClass="fa-solid fa-cart-shopping" />
+              <NavItem id="history" label="Riwayat" iconClass="fa-solid fa-clock-rotate-left" />
+              <NavItem id="menu" label="Manajemen Menu" iconClass="fa-solid fa-utensils" />
+            </nav>
+          </aside>
+
+          {/* Main Content View */}
+          <main className="flex-1 overflow-y-auto relative bg-slate-50/50">
+            {activeTab === 'home' && (
+              <HomeScreen 
+                onNavigate={(tab) => setActiveTab(tab)}
+                transactions={transactions}
+                menus={menus}
+              />
+            )}
+            {activeTab === 'dashboard' && (
+              <Dashboard 
+                transactions={transactions} 
+                onShowReceipt={(tx) => setSelectedReceiptTx(tx)} 
+              />
+            )}
+            {activeTab === 'cashier' && (
+              <Cashier 
+                menus={menus} 
+                addTransaction={(tx) => setTransactions([tx, ...transactions])} 
+                onShowReceipt={(tx) => setSelectedReceiptTx(tx)} 
+              />
+            )}
+            {activeTab === 'history' && (
+              <TransactionHistory 
+                transactions={transactions} 
+                onShowReceipt={(tx) => setSelectedReceiptTx(tx)} 
+              />
+            )}
+            {activeTab === 'menu' && (
+              <MenuManagement 
+                menus={menus} 
+                setMenus={setMenus} 
+              />
+            )}
+          </main>
+
+          {/* Receipt Modal */}
+          {selectedReceiptTx && (
+            <ReceiptModal 
+              tx={selectedReceiptTx} 
+              onClose={() => setSelectedReceiptTx(null)} 
+            />
+          )}
+        </div>
+      );
+    }
+
+    const rootElement = document.getElementById('root');
+    const root = ReactDOM.createRoot(rootElement);
+    root.render(<App />);
+  </script>
+</body>
+</html>
